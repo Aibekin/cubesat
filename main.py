@@ -89,6 +89,7 @@
 # cv2.destroyAllWindows()
 
 
+
 import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -96,15 +97,6 @@ import math
 import random
 import funcs
 
-def find_center(corners):
-    [x1, y1] = corners[0][0][0]
-    [x2, y2] = corners[0][0][1]
-    [x3, y3] = corners[0][0][2]
-    [x4, y4] = corners[0][0][3]
-    
-    x_center = (x1 + x2 + x3 + x4) / 4
-    y_center = (y1 + y2 + y3 + y4) / 4
-    return (x_center, y_center)
 
 def calc_ang(tvecs1, rvecs1):
     rvec_matrix, _ = cv2.Rodrigues(rvecs1[0])
@@ -207,40 +199,80 @@ def my_estimatePoseSingleMarkers(corners, marker_size, mtx, distortion):
         trash.append(nada)
     return rvecs, tvecs, trash
 
-def my_estimatePoseSingleMarkers_3P(corners_2d, center_2d, marker_size, mtx, distortion, rvec_init=None, tvec_init=None):
-    # Определение 3D координат трех известных точек маркера
-    half_size = marker_size / 2
-    marker_points_3d = np.array([
-        [0, 0, 0],             # Центр
-        [half_size, half_size, 0],     # Верхний правый
-        [half_size, -half_size, 0],    # Нижний правый
-        [-half_size, -half_size, 0],   # Нижний левый
-        [-half_size, half_size, 0],    # Верхний левый
-    ], dtype=np.float32)
+# def my_estimatePoseSingleMarkers_3P(corners, central_point, marker_size, mtx, distortion):
+#     # Определение 3D координат трех известных точек маркера
+#     half_size = marker_size / 2
+#     marker_points_3d = np.array([
+#         [central_point[0] - half_size, central_point[1] + half_size, 0],  # Верхний левый угол
+#         [central_point[0] + half_size, central_point[1] - half_size, 0],  # Верхний правый угол
+#         [central_point[0] - half_size, central_point[1] - half_size, 0]
+#     ], dtype=np.float32)
 
-    # Собираем 2D точки
-    corners = corners_2d.reshape(-1, 2)  # Преобразуем в форму (3, 2)
     
-    # Добавляем центр к точкам изображения
-    image_points = np.vstack((
-        center_2d.reshape(1, 2),  # Центр
-        corners  # Углы
-    )).astype(np.float32)
-    print("Corners shape:", corners.shape)
-    print("Corners dtype:", corners.dtype)
-    print("3D points shape:", marker_points_3d.shape)
-    print("3D points dtype:", marker_points_3d.dtype)
-    # Проверяем начальные приближения
-    
-    success, rvec, tvec = cv2.solvePnP(
-        marker_points_3d,
-        image_points,
-        mtx,
-        distortion,
-        flags=cv2.SOLVEPNP_SQPNP
-    )
+#     for c in corners:
+#         # Используем только три угла
+#         selected_corners = c[:3]
 
-    return success, rvec, tvec
+#         # Решение задачи PnP с тремя точками без начальных значений
+#         success, rvec, tvec = cv2.solvePnP(marker_points_3d, selected_corners, mtx, distortion, flags=cv2.SOLVEPNP_SQPNP)
+        
+#         if success:
+#             rvecs.append(rvec)
+#             tvecs.append(tvec)
+#         else:
+#             print("Ошибка при решении PnP")
+
+#     return rvecs, tvecs
+
+def rvec_to_mtx(rvec):
+    R, _ = cv2.Rodrigues(rvec)
+    return R
+
+def mtx_to_quat(R1):
+    quat = R.from_matrix(R1).as_quat()
+    return quat
+
+def find_avg_quat(rvec):
+    R1 = rvec_to_mtx(rvec[0])
+    R2 = rvec_to_mtx(rvec[1])
+    
+    quat1 = mtx_to_quat(R1)
+    quat2 = mtx_to_quat(R2)
+
+    avg_quat = (quat1 + quat2) / np.linalg.norm(quat1 + quat2)  # Нормализуем средний кватернион
+    average_rotation_matrix = R.from_quat(avg_quat).as_matrix()
+    return average_rotation_matrix
+
+def draw_axes_at_center_of_markers(frame, center_1, camera_matrix, dist_coeffs):
+    if len(corners) < 3:
+        print("Недостаточно маркеров для расчета центра.")
+        return
+
+    # Получаем 2D координаты углов для трех маркеров
+    center = np.array([center_1[0], center_1[1], 0.0], dtype=np.float32).reshape((3,1))
+    axis_length = 0.1  # Длина осей
+    axes = np.array([[0.1, 0, 0],    # Ось X
+                     [0, 0.1, 0],    # Ось Y
+                     [0, 0, 0.1]],   # Ось Z
+                    dtype=np.float32)
+    axes += center.T
+    # Проецируем 3D оси на 2D изображение
+    image_points, _ = cv2.projectPoints(axes, np.zeros((3, 1), dtype=np.float32), center, camera_matrix, dist_coeffs)
+
+    if len(image_points) < 4:
+        return
+
+    # Рисуем оси
+    origin = tuple(image_points[0].flatten().astype(int))  # Начальная точка (центр)
+    x_axis = tuple(image_points[1].flatten().astype(int))  # Ось X
+    y_axis = tuple(image_points[2].flatten().astype(int))  # Ось Y
+    z_axis = tuple(image_points[3].flatten().astype(int))  # Ось Z, но игнорируется при отрисовке
+
+    # Рисуем оси на изображении
+    cv2.line(frame, origin, x_axis[:2], (255, 0, 0), 2)  # Ось X - красная
+    cv2.line(frame, origin, y_axis[:2], (0, 255, 0), 2)  # Ось Y - зеленая
+    cv2.line(frame, origin, z_axis[:2], (0, 0, 255), 2)  # Ось Z - синяя
+
 
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)  # Подставь нужный словарь
 parameters = cv2.aruco.DetectorParameters()
@@ -284,9 +316,20 @@ while True:
             index_id_3 = indices_id_3[0]
             index_id_4 = indices_id_4[0]
             point = give_points(corners, index_id_1, index_id_2, index_id_3, index_id_4)
-            center = find_center(corners)
+            # x, y = funcs.find_center(corners)
+            # print(x, y)
+            # cv2.circle(frame, (int(x), int(y)), 5, (255,0,0), -1)
             lenBott = math.sqrt((point[0][2][0] - point[0][3][0])**2 + (point[0][2][1] - point[0][3][1])**2) / 2
             rvecs1, tvecs1, _ = my_estimatePoseSingleMarkers(point, virtual_size, camera_matrix, dist_coeffs)
+            R1 = cv2.Rodrigues(rvecs[0])
+            R2 = cv2.Rodrigues(rvecs[1])
+            
+            quat1 = R.from_matrix(R1).as_quat()
+            quat2 = R.from_matrix(R2).as_quat()
+            
+            avg_quat = (quat1 + quat2) / np.linalg.norm(quat1 + quat2)
+            average_rotation_matrix = R.from_quat(avg_quat).as_matrix()
+            print(average_rotation_matrix)
             cv2.drawFrameAxes(frame, camera_matrix, dist_coeffs, rvecs1[0], tvecs1[0], 0.01)
             cv2.drawContours(frame, [point.astype(np.int32)], -1, (160, 120, 255), thickness=2)
             
@@ -323,7 +366,8 @@ while True:
                 [ccx_4[0], ccx_4[1]]]
             ], dtype=np.float32)
             print(tvecs1)
-            rvec, tvec, _ = my_estimatePoseSingleMarkers_3P(point, np.array([374.25, 271.25], dtype=np.float32), 0.04, camera_matrix, dist_coeffs)
+            # rvec, tvec = my_estimatePoseSingleMarkers_3P(point, [424.75, 362.0], 0.04, camera_matrix, dist_coeffs)
+            draw_axes_at_center_of_markers(frame, [424.75, 362.0], camera_matrix, dist_coeffs)
             cv2.drawFrameAxes(frame, camera_matrix, dist_coeffs, rvec[0], tvec[0], 0.01)
             # cv2.drawContours(frame, [point.astype(np.int32)], -1, (160, 120, 255), thickness=2)
 
